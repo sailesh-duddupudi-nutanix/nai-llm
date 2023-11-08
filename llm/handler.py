@@ -11,6 +11,9 @@ from typing import List, Dict
 import torch
 import transformers
 from ts.torch_handler.base_handler import BaseHandler
+from threading import Thread
+from ts.protocol.otf_message_handler import send_intermediate_predict_response
+from custom_streamer import BatchTextIteratorStreamer
 
 logger = logging.getLogger(__name__)
 logger.info("Transformers version %s", transformers.__version__)
@@ -80,6 +83,7 @@ class LLMHandler(BaseHandler, ABC):
         self.device = None
         self.model = None
         self.device_map = None
+        self.batch_size = 1
 
     def initialize(self, context):
         """
@@ -88,6 +92,9 @@ class LLMHandler(BaseHandler, ABC):
         """
         properties = context.system_properties
         model_dir = properties.get("model_dir")
+        logger.info("%s", model_dir)
+        logger.info("hello")
+        logger.info("%s", os.path.dirname(__file__))
 
         if torch.cuda.is_available() and properties.get("gpu_id") is not None:
             self.device = torch.device("cuda")
@@ -118,7 +125,7 @@ class LLMHandler(BaseHandler, ABC):
 
     def preprocess(self, data: str) -> torch.Tensor:
         """
-        This method tookenizes input text using the associated tokenizer.
+        This method tokenizes input text using the associated tokenizer.
         Args:
             text (str): The input text to be tokenized.
         Returns:
@@ -153,10 +160,11 @@ class LLMHandler(BaseHandler, ABC):
                 self.request["request_type"][idx] = "raw"
                 input_list.append(row_input)
 
+        self.batch_size = len(input_list)
+
         logger.info("Received text: %s", ", ".join(map(str, input_list)))
-        encoded_input = self.tokenizer(input_list, padding=True, return_tensors="pt")[
-            "input_ids"
-        ].to(self.device)
+        logger.info("Batch Size: %s", self.batch_size)
+        encoded_input = self.tokenizer(input_list, padding=True, return_tensors="pt").to(self.device)
 
         return encoded_input
 
@@ -186,17 +194,42 @@ class LLMHandler(BaseHandler, ABC):
         if os.environ.get("NAI_MAX_TOKENS"):
             param_dict["max_new_tokens"] = self.get_env_value("NAI_MAX_TOKENS")
         else:
-            param_dict["max_new_tokens"] = 200
+            param_dict["max_new_tokens"] = 100
+
+        streamer = BatchTextIteratorStreamer(self.batch_size, self.tokenizer, skip_prompt=True)
 
         param_dict["pad_token_id"] = self.tokenizer.eos_token_id
         param_dict["eos_token_id"] = self.tokenizer.eos_token_id
         param_dict["do_sample"] = True
+        param_dict["min_new_tokens"] = 100
+        param_dict["streamer"] = streamer
 
-        generated_ids = self.model.generate(encoding, **param_dict)
+        generation_kwargs = dict(encoding,
+                                 pad_token_id = self.tokenizer.eos_token_id,
+                                 eos_token_id = self.tokenizer.eos_token_id,
+                                 streamer = streamer,
+                                 do_sample = True,
+                                 max_new_tokens = 100)
 
-        inference = []
-        inference = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-        logger.info("Generated text is: %s", ", ".join(map(str, inference)))
+        # generated_ids = self.model.generate(encoding, **param_dict)
+
+        thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
+        thread.start()
+
+        for new_text in streamer:
+            logger.info("type is: %s", type(new_text))
+            logger.info("new text is: %s", new_text)
+            send_intermediate_predict_response(
+                new_text,
+                self.context.request_ids,
+                "Intermediate Prediction success",
+                200,
+                self.context,
+            )
+
+        inference = [""] * self.batch_size
+        # inference = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+        # logger.info("Generated text is: %s", ", ".join(map(str, inference)))
         return inference
 
     def postprocess(self, data: List[str]) -> List[str]:

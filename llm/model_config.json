@@ -62,8 +62,8 @@
         "repo_id": "gpt2",
         "repo_version": "11c5a3d5811f50298f278a704980280950aedb10",
         "registration_params": {
-            "batch_size": 1,
-            "max_batch_delay": 200,
+            "batch_size": 3,
+            "max_batch_delay": 10000,
             "response_timeout": 2000
         }
     }

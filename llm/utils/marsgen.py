@@ -69,6 +69,7 @@ def generate_mars(
     extra_files_list = [
         os.path.join(gen_model.mar_utils.model_path, file) for file in extra_files_list
     ]
+    extra_files_list.append(os.path.join(os.path.dirname(os.path.dirname(__file__)), "custom_streamer.py"))
     extra_files = ",".join(extra_files_list)
 
     export_path = model_store_dir
